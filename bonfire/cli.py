@@ -48,7 +48,7 @@ from .formats import tail_format, dump_format
 @click.option('--sort', '-s', default=None, help="Field used for sorting (default: timestamp)")
 @click.option("--asc/--desc", default=False, help="Sort ascending / descending")
 @click.option("--proxy", default=None, help="Proxy to use for the http/s request")
-@click.argument('query', default="*")
+@click.argument('query', nargs=-1)
 def run(host,
         node,
         port,
@@ -74,7 +74,6 @@ def run(host,
     """
     Bonfire - A graylog CLI client
     """
-
     cfg = get_config()
 
     # Configure the graylog API object
@@ -124,10 +123,22 @@ def run(host,
     username = gl_api.username
 
     # Check if the query should be retrieved from the configuration
-    if query[0] == ":":
-        section_name = "query" + query
+    if not query:
+        query = ["*"]
+    elif len(query) == 1:
+        query = query[0].split()
+
+    if query[0][0] == ":":
+        section_name = "query" + query[0]
         template_options = dict(map(lambda t: tuple(str(t).split("=", 1)), template_option))
-        query = get_templated_option(cfg, section_name, "query", template_options)
+        if cfg.has_option(section_name, "query"):
+            cfg_query = get_templated_option(cfg, section_name, "query", template_options)
+        else:
+            cfg_query = "*"
+        if len(query) > 1:
+            query = " ".join([cfg_query, "AND"] + list(query[1:]))
+        else:
+            query = cfg_query
 
         if cfg.has_option(section_name, "limit"):
             limit = get_templated_option(cfg, section_name, "limit", template_options)
@@ -149,6 +160,8 @@ def run(host,
 
         if cfg.has_option(section_name, "stream"):
             stream = get_templated_option(cfg, section_name, "stream", template_options)
+    else:
+        query = " ".join(query)
 
     # Configure the base query
     sr = SearchRange(from_time=search_from, to_time=search_to)
@@ -166,7 +179,7 @@ def run(host,
     if follow:
         limit = None
         sort = None
-        sr.from_time = arrow.now('local').replace(seconds=-latency - 600)
+        sr.from_time = arrow.now('local').replace(seconds=-latency - 10)
         sr.to_time = arrow.now('local').replace(seconds=-latency)
 
     # Get the user permissions
@@ -174,14 +187,25 @@ def run(host,
 
     # If the permissions are not set or a stream is specified
     stream_filter = None
-    if stream or (userinfo["permissions"] != ["*"] and gl_api.default_stream is None):
-        if not stream:
-            streams = gl_api.streams()["streams"]
-            click.echo("Please select a stream to query:")
-            for i, stream in enumerate(streams):
-                click.echo("{}: Stream '{}' (id: {})".format(i, stream["title"], stream["id"]))
-            i = click.prompt("Enter stream number:", type=int, default=0)
-            stream = streams[i]["id"]
+    streams = gl_api.streams()["streams"]
+    if stream:
+        for s in streams:
+            if s['id'] == stream:
+                break
+        else:
+            for s in streams:
+                if s['title'] == stream:
+                    stream = s['id']
+                    break
+            else:
+                raise ValueError("Stream %s not found on server" % stream)
+        stream_filter = "streams:{}".format(stream)
+    elif userinfo["permissions"] != ["*"] and gl_api.default_stream is None:
+        click.echo("Please select a stream to query:")
+        for i, stream in enumerate(streams):
+            click.echo("{}: Stream '{}' (id: {})".format(i, stream["title"], stream["id"]))
+        i = click.prompt("Enter stream number:", type=int, default=0)
+        stream = streams[i]["id"]
         stream_filter = "streams:{}".format(stream)
 
     # Create the initial query object

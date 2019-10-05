@@ -23,8 +23,12 @@ def api_from_config(cfg, node_name="default"):
     port = cfg.get(section_name, "port")
     endpoint = cfg.get(section_name, "endpoint")
     password = None
-    if cfg.has_option(section_name, "password"):
-        password = cfg.get(section_name, "password")
+
+    if cfg.has_option(section_name, "timezone"):
+        timezone = cfg.get(section_name, "timezone")
+    else:
+        timezone = 'utc'
+
 
     if cfg.has_option(section_name, "username"):
         username = cfg.get(section_name, "username")
@@ -46,8 +50,9 @@ def api_from_config(cfg, node_name="default"):
         default_stream = cfg.get(section_name, "default_stream")
 
     return GraylogAPI(host=host, port=port, endpoint=endpoint,
-            username=username, password=password,
-            default_stream=default_stream, scheme=scheme, proxies=proxies)
+                      username=username, password=password,
+                      default_stream=default_stream, scheme=scheme,
+                      host_tz=timezone, proxies=proxies)
 
 
 def api_from_host(host, port, endpoint, username, scheme, proxies=None):

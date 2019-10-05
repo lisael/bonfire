@@ -8,13 +8,12 @@ from __future__ import division, print_function
 import time
 import arrow
 import sys
-from kitchen.text.converters import getwriter
 from .graylog_api import SearchRange
 
 
 def run_logprint(api, query, formatter, follow=False, interval=0, latency=2, output=None, header=None):
     if output is None:
-        output = getwriter('utf8')(sys.stdout)
+        output = sys.stdout
 
     if follow:
         assert query.limit is None
@@ -22,8 +21,9 @@ def run_logprint(api, query, formatter, follow=False, interval=0, latency=2, out
         try:
             while True:
                 result = run_logprint(api, query, formatter, follow=False, output=output)
-                new_range = SearchRange(from_time=result.range_to,
-                        to_time=result.range_to.replace(seconds=+1))
+                new_range = SearchRange(
+                        from_time=result.range_to,
+                        to_time=arrow.now(api.host_tz).replace(seconds=-latency))
                 query = query.copy_with_range(new_range)
 
                 time.sleep(interval / 1000.0)
@@ -36,6 +36,7 @@ def run_logprint(api, query, formatter, follow=False, interval=0, latency=2, out
         formatted_msgs.reverse()
 
         for msg in formatted_msgs:
+            msg.encode('utf-8')
             print(msg, file=output)
 
         return result

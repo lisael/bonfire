@@ -81,7 +81,7 @@ class SearchQuery(object):
 
 
 class GraylogAPI(object):
-    def __init__(self, host, port, endpoint, username, password=None, host_tz='utc', default_stream=None, scheme='http',
+    def __init__(self, host, port, endpoint, username, password=None, host_tz='Europe/Paris', default_stream=None, scheme='http',
                  proxies=None):
         endpoint = '/' + endpoint.strip('/')
 
@@ -114,7 +114,8 @@ class GraylogAPI(object):
                 params[label + "[]"] = item
             else:
                 params[label] = item
-
+        # print(url)
+        # import pprint; pprint.pprint(params)
         r = requests.get(self.base_url + url, params=params,
                 headers=self.get_header, auth=(self.username, self.password),
                 proxies=self.proxies)
