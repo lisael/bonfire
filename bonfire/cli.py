@@ -7,14 +7,6 @@ from __future__ import division, print_function, absolute_import
 
 import logging
 import warnings
-from bonfire import __version__
-
-__author__ = "Malte Harder"
-__copyright__ = "Blue Yonder"
-__license__ = "new-bsd"
-
-_logger = logging.getLogger(__name__)
-
 from datetime import timedelta
 import sys
 
@@ -26,6 +18,14 @@ from .config import get_config, get_password_from_keyring, store_password_in_key
 from .graylog_api import GraylogAPI, SearchRange, SearchQuery, TermQuery
 from .output import run_logprint
 from .formats import tail_format, dump_format
+from bonfire import __version__
+
+__author__ = "Malte Harder"
+__copyright__ = "Blue Yonder"
+__license__ = "new-bsd"
+
+_logger = logging.getLogger(__name__)
+
 
 
 def cli_error(msg):
@@ -49,15 +49,15 @@ def cli_error(msg):
 @click.option("-l", "--value-list", 'mode', flag_value="val_list", help="List unique values of the given --field")
 @click.option("-f", "--follow", default=False, is_flag=True, help="Poll the logging server for new logs matching the query (sets search from to 10 minutes ago, limit to None)")
 @click.option("-i", "--interval", default=1000, help="Polling interval in ms (default: 1000)")
-@click.option("-n", "--limit", default=10, help="Limit the number of results (default: 10)")
+@click.option("-n", "--limit", default=None, type=int, help="Limit the number of results (default: 10)")
 @click.option("-a", "--latency", default=2, help="Latency of polling queries (default: 2)")
-@click.option("-r", "--stream", default=None, help="Stream ID of the stream to query (default: no stream filter)")
-@click.option('--field', '-e', multiple=True, help="Fields to include in the query result", default=["message", "source", "facility", "line", "module"])
+@click.option("-r", "--stream", default=None, help="Stream title or ID of the stream to query (default: no stream filter)")
+@click.option('--field', '-e', multiple=True, help="Fields to include in the query result")
 @click.option('--template-option', '-x', multiple=True, help="Template options for the stored query")
 @click.option('--sort', '-s', default=None, help="Field used for sorting (default: timestamp)")
 @click.option("--asc/--desc", default=False, help="Sort ascending / descending")
 @click.option("--proxy", default=None, help="Proxy to use for the http/s request")
-@click.option("-q", "--query", default="*")
+@click.option("-q", "--query", default="")
 @click.argument("more_query", nargs=-1)
 def run(host,
         node,
@@ -131,7 +131,7 @@ def run(host,
     gl_api = GraylogAPI(**nodecfg)
 
     # Check if the query should be retrieved from the configuration
-    query = query.split() + list(more_query)
+    query = query.split() + list(more_query) or ["*"]
 
     if query[0][0] == ":":
         section_name = "query" + query[0]
@@ -150,22 +150,22 @@ def run(host,
                 query = cfg_query
 
         if mode != "val_list":
-            if cfg.has_option(section_name, "limit"):
-                limit = get_templated_option(cfg, section_name, "limit", template_options)
+            if cfg.has_option(section_name, "limit") and limit is None:
+                limit = int(get_templated_option(cfg, section_name, "limit", template_options))
 
-            if cfg.has_option(section_name, "from"):
+            if cfg.has_option(section_name, "from") and search_from is None:
                 search_from = get_templated_option(cfg, section_name, "from", template_options)
 
-            if cfg.has_option(section_name, "to"):
+            if cfg.has_option(section_name, "to") and search_to is None:
                 search_to = get_templated_option(cfg, section_name, "to", template_options)
 
-            if cfg.has_option(section_name, "sort"):
+            if cfg.has_option(section_name, "sort") and sort is None:
                 sort = get_templated_option(cfg, section_name, "sort", template_options)
 
             if cfg.has_option(section_name, "asc"):
                 asc = get_templated_option(cfg, section_name, "asc", template_options)
 
-            if cfg.has_option(section_name, "fields"):
+            if cfg.has_option(section_name, "fields") and not field:
                 field = get_templated_option(cfg, section_name, "fields", template_options).split(",")
 
         if cfg.has_option(section_name, "stream"):
@@ -190,8 +190,13 @@ def run(host,
     fields = None
     if field:
         fields = list(field)
+    else:
+        fields =  ["message", "source", "facility", "line", "module"]
 
-    if limit <= 0:
+    print(limit)
+    if limit is None:
+        limit = 10
+    elif limit <= 0:
         limit = None
 
     # Set limit to None, sort to none and start time to 10 min ago, if follow
