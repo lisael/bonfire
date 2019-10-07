@@ -42,11 +42,19 @@ class SearchResult(object):
         return "\n".join(map(lambda m: m.simple_formatted(), self.messages))
 
 
-class SearchRange(object):
-    def __init__(self, from_time=None, to_time=None, relative=False):
+class SearchRange:
+    def __init__(self, from_time=None, to_time="now", relative=False):
         self.from_time = datetime_converter(from_time)
-        self.to_time = datetime_converter(to_time)
+        self._to_time = to_time
         self.relative = relative
+
+    @property
+    def to_time(self):
+        return datetime_converter(self._to_time)
+
+    @to_time.setter
+    def to_time(self, val):
+        self._to_time = val
 
     def is_relative(self):
         return self.relative
@@ -80,9 +88,18 @@ class SearchQuery(object):
         return q
 
 
+class TermQuery:
+    def __init__(self, search_range, field, filter=None, query="*"):
+        self.search_range = search_range
+        self.field = field
+        self.query = query
+        self.filter = filter
+
+
 class GraylogAPI(object):
-    def __init__(self, host, port, endpoint, username, password=None, host_tz='Europe/Paris', default_stream=None, scheme='http',
-                 proxies=None):
+    def __init__(self, host=None, port=None, endpoint=None, username=None,
+                 password=None, timezone=None, default_stream=None, scheme=None,
+                 proxies=None, tls=False, **kwargs):
         endpoint = '/' + endpoint.strip('/')
 
         self.host = host
@@ -90,9 +107,12 @@ class GraylogAPI(object):
         self.endpoint = endpoint
         self.username = username
         self.password = password
-        self.host_tz = host_tz
+        self.host_tz = timezone
         self.default_stream = default_stream
         self.proxies = proxies
+
+        if scheme is None:
+            scheme = "https" if tls else "http"
 
         self.get_header = {"Accept": "application/json"}
         self.base_url = "{scheme}://{host}:{port}{endpoint}".format(host=host,
@@ -119,6 +139,7 @@ class GraylogAPI(object):
         r = requests.get(self.base_url + url, params=params,
                 headers=self.get_header, auth=(self.username, self.password),
                 proxies=self.proxies)
+        # import ipdb; ipdb.set_trace()
 
         if r.status_code == requests.codes.ok:
             return r.json()
@@ -160,6 +181,25 @@ class GraylogAPI(object):
     def streams(self):
         url = "streams"
         return self.get(url=url)
+
+    def terms(self, query):
+        sort = query.field + ":desc"
+        url = "search/universal/relative/terms"
+        range_ = query.search_range.range_in_seconds()
+
+        filter = query.filter
+        if filter is None:
+            if self.default_stream is not None:
+                filter = "streams:{}".format(self.default_stream)
+
+        return self.get(
+            url= url,
+            query=query.query,
+            range=range_,
+            filter=filter,
+            field=query.field,
+            size=50,
+            order=sort)
 
     def search_raw(self, query, search_range, limit=None, offset=None,
             filter=None, fields=None, sort=None):

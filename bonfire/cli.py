@@ -6,6 +6,7 @@ from __future__ import division, print_function, absolute_import
 # Todo:
 
 import logging
+import warnings
 from bonfire import __version__
 
 __author__ = "Malte Harder"
@@ -14,15 +15,22 @@ __license__ = "new-bsd"
 
 _logger = logging.getLogger(__name__)
 
+from datetime import timedelta
+import sys
+
 import click
 import getpass
 import arrow
 
 from .config import get_config, get_password_from_keyring, store_password_in_keyring, get_templated_option
-from .graylog_api import SearchRange, SearchQuery
-from .utils import cli_error, api_from_config, api_from_host
+from .graylog_api import GraylogAPI, SearchRange, SearchQuery, TermQuery
 from .output import run_logprint
 from .formats import tail_format, dump_format
+
+
+def cli_error(msg):
+    click.echo(click.style(msg, fg='red'))
+    sys.exit(1)
 
 
 @click.command()
@@ -34,12 +42,13 @@ from .formats import tail_format, dump_format
 @click.option("-u", "--username", default=None, help="Your graylog username")
 @click.option("-p", "--password", default=None, help="Your graylog password (default: prompt)")
 @click.option("-k/-nk", "--keyring/--no-keyring", default=False, help="Use keyring to store/retrieve password")
-@click.option("-@", "--search-from", default="5 minutes ago", help="Query range from")
+@click.option("-@", "--search-from", default=None, help="Query range from")
 @click.option("-#", "--search-to", default=None, help="Query range to (default: now)")
-@click.option('-t', '--tail', 'mode', flag_value='tail', default=True, help="Show the last n lines for the query (default)")
+@click.option('-t', '--tail', 'mode', flag_value='tail', default=True, help="Show the last --limit lines for the query (default)")
 @click.option('-d', '--dump', 'mode', flag_value='dump', help="Print the query result as a csv")
+@click.option("-l", "--value-list", 'mode', flag_value="val_list", help="List unique values of the given --field")
 @click.option("-f", "--follow", default=False, is_flag=True, help="Poll the logging server for new logs matching the query (sets search from to 10 minutes ago, limit to None)")
-@click.option("-l", "--interval", default=1000, help="Polling interval in ms (default: 1000)")
+@click.option("-i", "--interval", default=1000, help="Polling interval in ms (default: 1000)")
 @click.option("-n", "--limit", default=10, help="Limit the number of results (default: 10)")
 @click.option("-a", "--latency", default=2, help="Latency of polling queries (default: 2)")
 @click.option("-r", "--stream", default=None, help="Stream ID of the stream to query (default: no stream filter)")
@@ -48,7 +57,8 @@ from .formats import tail_format, dump_format
 @click.option('--sort', '-s', default=None, help="Field used for sorting (default: timestamp)")
 @click.option("--asc/--desc", default=False, help="Sort ascending / descending")
 @click.option("--proxy", default=None, help="Proxy to use for the http/s request")
-@click.argument('query', nargs=-1)
+@click.option("-q", "--query", default="*")
+@click.argument("more_query", nargs=-1)
 def run(host,
         node,
         port,
@@ -70,93 +80,93 @@ def run(host,
         sort,
         asc,
         proxy,
-        query):
+        query,
+        more_query):
     """
     Bonfire - A graylog CLI client
     """
-    cfg = get_config()
+    cfg, dict_cfg = get_config()
+
+    def get_nodecfg(node=None, nodecfg=None):
+        if node:
+            nodecfg = dict_cfg[f"node:{node}"]
+        if username is None and nodecfg["username"] is None:
+            nodecfg["username"] = click.prompt(
+                "Enter username for {host}:{port}".format(**nodecfg),
+                default=getpass.getuser())
+        else:
+            nodecfg.setdefault("username", username)
+        use_keyring = dict_cfg.get("use_keyring", keyring)
+        if use_keyring and password is None:
+            nodecfg["password"] = get_password_from_keyring(nodecfg["host"],
+                                                            nodecfg["username"])
+        if nodecfg["password"] is None:
+            nodecfg["password"] = click.prompt(
+                "Enter password for {username}@{host}:{port}".format(
+                    **nodecfg), hide_input=True)
+        if use_keyring:
+            store_password_in_keyring(nodecfg["host"], nodecfg["username"],
+                                      nodecfg["password"])
+        return nodecfg
 
     # Configure the graylog API object
     if node is not None:
         # The user specified a preconfigured node, take the config from there
-        gl_api = api_from_config(cfg, node_name=node)
+        nodecfg = get_nodecfg()
     else:
         if host is not None:
             # A manual host configuration is used
-            if username is None:
-                username = click.prompt("Enter username for {host}:{port}".format(host=host, port=port),
-                                        default=getpass.getuser())
-            if tls:
-                scheme = "https"
-            else:
-                scheme = "http"
-
-            if proxy:
-                proxies = {scheme: proxy}
-            else:
-                proxies = None
-
-            gl_api = api_from_host(host=host, port=port, endpoint=endpoint, username=username, scheme=scheme,
-                                   proxies=proxies)
+            scheme = "https" if tls else "http"
+            nodecfg = dict(scheme=scheme,
+                           proxies={scheme: proxy} if proxy else None,
+                           host=host, port=port, endpoint=endpoint,
+                           username=username )
+            nodecfg = get_nodecfg(None, nodecfg)
         else:
-            if cfg.has_section("node:default"):
-                gl_api = api_from_config(cfg)
+            if "node:default" in dict_cfg:
+                nodecfg = get_nodecfg("default")
             else:
                 cli_error("Error: No host or node configuration specified and no default found.")
 
-    if username is not None:
-        gl_api.username = username
-
-    if keyring and password is None and gl_api.password is None:
-        password = get_password_from_keyring(gl_api.host, gl_api.username)
-
-    if password is None and gl_api.password is None:
-        password = click.prompt("Enter password for {username}@{api}".format(
-            username=gl_api.username, api=gl_api), hide_input=True)
-
-    if gl_api.password is None:
-        gl_api.password = password
-
-    if keyring:
-        store_password_in_keyring(gl_api.host, gl_api.username, password)
-
-    username = gl_api.username
+    gl_api = GraylogAPI(**nodecfg)
 
     # Check if the query should be retrieved from the configuration
-    if not query:
-        query = ["*"]
-    elif len(query) == 1:
-        query = query[0].split()
+    query = query.split() + list(more_query)
 
     if query[0][0] == ":":
         section_name = "query" + query[0]
         template_options = dict(map(lambda t: tuple(str(t).split("=", 1)), template_option))
-        if cfg.has_option(section_name, "query"):
-            cfg_query = get_templated_option(cfg, section_name, "query", template_options)
+        if mode == "val_list":
+            # TODO: warn that cli provided query is ignored
+            query = ["*"]
         else:
-            cfg_query = "*"
-        if len(query) > 1:
-            query = " ".join([cfg_query, "AND"] + list(query[1:]))
-        else:
-            query = cfg_query
+            if cfg.has_option(section_name, "query"):
+                cfg_query = get_templated_option(cfg, section_name, "query", template_options)
+            else:
+                cfg_query = "*"
+            if len(query) > 1:
+                query = " ".join([cfg_query, "AND"] + list(query[1:]))
+            else:
+                query = cfg_query
 
-        if cfg.has_option(section_name, "limit"):
-            limit = get_templated_option(cfg, section_name, "limit", template_options)
+        if mode != "val_list":
+            if cfg.has_option(section_name, "limit"):
+                limit = get_templated_option(cfg, section_name, "limit", template_options)
 
-        if cfg.has_option(section_name, "from"):
-            search_from = get_templated_option(cfg, section_name, "from", template_options)
+            if cfg.has_option(section_name, "from"):
+                search_from = get_templated_option(cfg, section_name, "from", template_options)
 
-        if cfg.has_option(section_name, "to"):
-            search_to = get_templated_option(cfg, section_name, "to", template_options)
+            if cfg.has_option(section_name, "to"):
+                search_to = get_templated_option(cfg, section_name, "to", template_options)
 
-        if cfg.has_option(section_name, "sort"):
-            sort = get_templated_option(cfg, section_name, "sort", template_options)
+            if cfg.has_option(section_name, "sort"):
+                sort = get_templated_option(cfg, section_name, "sort", template_options)
 
-        if cfg.has_option(section_name, "asc"):
-            asc = get_templated_option(cfg, section_name, "asc", template_options)
+            if cfg.has_option(section_name, "asc"):
+                asc = get_templated_option(cfg, section_name, "asc", template_options)
 
-        if cfg.has_option(section_name, "fields"):
-            field = get_templated_option(cfg, section_name, "fields", template_options).split(",")
+            if cfg.has_option(section_name, "fields"):
+                field = get_templated_option(cfg, section_name, "fields", template_options).split(",")
 
         if cfg.has_option(section_name, "stream"):
             stream = get_templated_option(cfg, section_name, "stream", template_options)
@@ -164,7 +174,17 @@ def run(host,
         query = " ".join(query)
 
     # Configure the base query
-    sr = SearchRange(from_time=search_from, to_time=search_to)
+    if search_from is None:
+        # by default search values form the last 24 hours
+        if mode == "val_list":
+            search_from = arrow.now("local") - timedelta(days=1)
+            search_to = "now"
+            relative = True
+        else:
+            search_from = "5 minutes ago"
+            relative = False
+
+    sr = SearchRange(from_time=search_from, to_time=search_to, relative=relative)
 
     # Pass none if the list of fields is empty
     fields = None
@@ -177,13 +197,16 @@ def run(host,
     # Set limit to None, sort to none and start time to 10 min ago, if follow
     # is active
     if follow:
-        limit = None
-        sort = None
-        sr.from_time = arrow.now('local').replace(seconds=-latency - 10)
-        sr.to_time = arrow.now('local').replace(seconds=-latency)
+        if mode == "val_list":
+            warnings.warn("No point to follow in list value mode")
+        else:
+            limit = None
+            sort = None
+            sr.from_time = arrow.now('local').replace(seconds=-latency - 10)
+            sr.to_time = arrow.now('local').replace(seconds=-latency)
 
     # Get the user permissions
-    userinfo = gl_api.user_info(username)
+    userinfo = gl_api.user_info(nodecfg["username"])
 
     # If the permissions are not set or a stream is specified
     stream_filter = None
@@ -198,7 +221,7 @@ def run(host,
                     stream = s['id']
                     break
             else:
-                raise ValueError("Stream %s not found on server" % stream)
+                cli_error("Stream %s not found on server" % stream)
         stream_filter = "streams:{}".format(stream)
     elif userinfo["permissions"] != ["*"] and gl_api.default_stream is None:
         click.echo("Please select a stream to query:")
@@ -208,17 +231,25 @@ def run(host,
         stream = streams[i]["id"]
         stream_filter = "streams:{}".format(stream)
 
-    # Create the initial query object
-    q = SearchQuery(search_range=sr, query=query, limit=limit,
-            filter=stream_filter, fields=fields, sort=sort, ascending=asc)
+    if mode == "val_list":
+        q = TermQuery(search_range=sr, query="*", filter=stream_filter, field=field[0])
+    else:
+        q = SearchQuery(search_range=sr, query=query, limit=limit,
+                        filter=stream_filter, fields=fields, sort=sort,
+                        ascending=asc)
 
-    # Check the mode in which the program should run (dump, tail or interactive mode)
-    if mode == "tail":
-        formatter = tail_format(fields)
-    elif mode == "dump":
-        formatter = dump_format(fields)
+    # Check the mode in which the program should run
+    if mode == "val_list":
+        # TODO: warn that cli provided query is ignored
+        result = gl_api.terms(q)
+        print(";".join(result["terms"].keys()))
+    else:
+        if mode == "tail":
+            formatter = tail_format(fields)
+        elif mode == "dump":
+            formatter = dump_format(fields)
 
-    run_logprint(gl_api, q, formatter, follow, interval, latency)
+        run_logprint(gl_api, q, formatter, follow, interval, latency)
 
 
 if __name__ == "__main__":

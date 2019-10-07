@@ -6,14 +6,11 @@ Created on 05.03.15
 
 from __future__ import division, print_function
 
-try:
-    import configparser
-except:
-    from six.moves import configparser
-
+import configparser
 import os
-import keyring
 from string import Template
+
+import keyring
 import arrow
 
 
@@ -21,7 +18,14 @@ def get_config():
     config = configparser.ConfigParser()
     config.read(['bonfire.cfg', os.path.expanduser('~/.bonfire.cfg')])
 
-    return config
+    return config, cfg_to_dict(config)
+
+
+def cfg_to_dict(cfg):
+    dictcfg = {k: dict(v) for k, v in dict(cfg).items()}
+    toplevel = dictcfg.setdefault("default", {})
+    dictcfg.update(toplevel)
+    return dictcfg
 
 
 def get_templated_option(cfg, section, option, kwargs={}):
