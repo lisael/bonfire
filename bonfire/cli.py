@@ -174,6 +174,7 @@ def run(host,
         query = " ".join(query)
 
     # Configure the base query
+    relative = False
     if search_from is None:
         # by default search values form the last 24 hours
         if mode == "val_list":
@@ -182,7 +183,6 @@ def run(host,
             relative = True
         else:
             search_from = "5 minutes ago"
-            relative = False
 
     sr = SearchRange(from_time=search_from, to_time=search_to, relative=relative)
 
